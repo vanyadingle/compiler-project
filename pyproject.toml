@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "minicompiler"
+version = "0.1.0"
+description = "MiniCompiler for C-like language"
+readme = "README.md"
+authors = [{name = "Your Name", email = "your@email.com"}]
+license = {text = "MIT"}
+requires-python = ">=3.8"
+dependencies = []
+
+[project.scripts]
+minicompiler-lex = "src.lexer.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
