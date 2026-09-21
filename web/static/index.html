@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>MiniLang — Визуализатор компилятора</title>
+
+  <!-- Monaco Editor (code editor with syntax highlighting) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
+  <!-- D3.js for tree visualization -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+
+  <style>
+    /* ── Reset & base ────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0f1117;
+      --surface:   #1a1d27;
+      --surface2:  #232636;
+      --border:    #2e3348;
+      --accent:    #7c6af7;
+      --accent2:   #56cfb2;
+      --text:      #e0e4f0;
+      --muted:     #7a8299;
+      --error:     #f16b6b;
+      --warn:      #f0a042;
+      --ok:        #56cfb2;
+      --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+    }
+
+    html, body { height: 100%; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); }
+
+    /* ── Layout ──────────────────────────────────────────────────── */
+    .app { display: flex; flex-direction: column; height: 100vh; }
+
+    header {
+      display: flex; align-items: center; gap: 1rem;
+      padding: .75rem 1.5rem;
+      background: var(--surface); border-bottom: 1px solid var(--border);
+    }
+    header h1 { font-size: 1.1rem; font-weight: 700; color: var(--accent); }
+    header .tagline { font-size: .78rem; color: var(--muted); }
+    header .spacer { flex: 1; }
+
+    .btn {
+      display: inline-flex; align-items: center; gap: .4rem;
+      padding: .45rem 1rem; border-radius: 6px; font-size: .85rem; font-weight: 600;
+      border: none; cursor: pointer; transition: filter .15s;
+    }
+    .btn:hover { filter: brightness(1.15); }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-ghost   { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+
+    .main { display: flex; flex: 1; overflow: hidden; }
+
+    /* ── Left panel (editor + tokens) ───────────────────────────── */
+    .left-panel {
+      display: flex; flex-direction: column;
+      width: 42%; min-width: 320px;
+      border-right: 1px solid var(--border);
+    }
+
+    .panel-header {
+      display: flex; align-items: center; gap: .5rem;
+      padding: .55rem 1rem;
+      background: var(--surface2); border-bottom: 1px solid var(--border);
+      font-size: .82rem; font-weight: 600; color: var(--muted);
+      user-select: none;
+    }
+    .panel-header .dot { width: 8px; height: 8px; border-radius: 50%; }
+    .dot-purple { background: var(--accent); }
+    .dot-teal   { background: var(--accent2); }
+    .dot-red    { background: var(--error); }
+
+    #editor-container { flex: 1; min-height: 0; }
+
+    .divider {
+      height: 6px; cursor: row-resize;
+      background: var(--border);
+      position: relative; flex-shrink: 0;
+    }
+    .divider::after {
+      content: ""; position: absolute; inset: 2px 40% 2px;
+      background: var(--muted); border-radius: 3px;
+    }
+
+    /* Tokens table */
+    .tokens-panel { flex: 0 0 200px; overflow: auto; }
+    #token-table { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: .72rem; }
+    #token-table th {
+      position: sticky; top: 0; background: var(--surface2);
+      padding: .35rem .6rem; text-align: left; color: var(--muted);
+      border-bottom: 1px solid var(--border);
+    }
+    #token-table td { padding: .25rem .6rem; border-bottom: 1px solid #1e2133; }
+    #token-table tr:hover td { background: var(--surface2); }
+    .tt-kw   { color: #c586c0; }
+    .tt-id   { color: #9cdcfe; }
+    .tt-lit  { color: #ce9178; }
+    .tt-op   { color: #d4d4d4; }
+    .tt-sep  { color: #808080; }
+    .tt-eof  { color: #444; }
+
+    /* Errors */
+    .errors-bar {
+      padding: .4rem .8rem; font-size: .78rem; font-family: var(--font-mono);
+      border-top: 1px solid var(--border);
+      max-height: 90px; overflow-y: auto; background: var(--bg);
+    }
+    .error-line { color: var(--error); padding: .1rem 0; }
+    .no-errors  { color: var(--ok); }
+
+    /* ── Right panel (AST tree) ──────────────────────────────────── */
+    .right-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+    .vis-toolbar {
+      display: flex; align-items: center; gap: .5rem;
+      padding: .55rem 1rem;
+      background: var(--surface2); border-bottom: 1px solid var(--border);
+      font-size: .82rem;
+    }
+    .vis-toolbar label { color: var(--muted); }
+    .vis-toolbar select, .vis-toolbar input[type=range] {
+      background: var(--surface); color: var(--text);
+      border: 1px solid var(--border); border-radius: 4px;
+      padding: .2rem .4rem; font-size: .8rem;
+    }
+
+    #tree-container { flex: 1; overflow: hidden; position: relative; }
+    #tree-svg { width: 100%; height: 100%; display: block; }
+
+    /* D3 tree nodes */
+    .node circle {
+      stroke-width: 2;
+      transition: r .2s, stroke .2s;
+      cursor: pointer;
+    }
+    .node text {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      fill: var(--text);
+      pointer-events: none;
+    }
+    .node .node-value {
+      fill: var(--accent2);
+      font-size: 10px;
+    }
+    .link {
+      fill: none;
+      stroke: var(--border);
+      stroke-width: 1.5;
+      transition: stroke .3s;
+    }
+
+    /* Node color classes */
+    .nc-program   { fill: #7c6af7; stroke: #5b4fcf; }
+    .nc-func      { fill: #3b82f6; stroke: #2563eb; }
+    .nc-stmt      { fill: #10b981; stroke: #059669; }
+    .nc-expr      { fill: #f59e0b; stroke: #d97706; }
+    .nc-literal   { fill: #ef4444; stroke: #dc2626; }
+    .nc-ident     { fill: #8b5cf6; stroke: #7c3aed; }
+    .nc-ctrl      { fill: #06b6d4; stroke: #0891b2; }
+    .nc-default   { fill: #6b7280; stroke: #4b5563; }
+
+    /* tooltip */
+    #tooltip {
+      position: absolute; display: none;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 6px; padding: .5rem .8rem;
+      font-size: .78rem; font-family: var(--font-mono);
+      pointer-events: none; z-index: 100;
+      max-width: 260px; word-break: break-all;
+    }
+
+    /* Legend */
+    .legend {
+      display: flex; flex-wrap: wrap; gap: .5rem;
+      padding: .4rem 1rem; font-size: .72rem;
+      border-top: 1px solid var(--border);
+      background: var(--surface2);
+    }
+    .legend-item { display: flex; align-items: center; gap: .3rem; }
+    .legend-dot  { width: 10px; height: 10px; border-radius: 50%; }
+
+    /* ── Example selector ────────────────────────────────────────── */
+    select.example-sel {
+      background: var(--surface2); color: var(--text);
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: .35rem .6rem; font-size: .82rem;
+    }
+
+    /* ── Spinner ─────────────────────────────────────────────────── */
+    .spinner {
+      display: none; width: 18px; height: 18px;
+      border: 2px solid var(--border); border-top-color: var(--accent);
+      border-radius: 50%; animation: spin .6s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Auto-parse badge ────────────────────────────────────────── */
+    .badge {
+      display: inline-block; padding: .15rem .45rem; border-radius: 4px;
+      font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+    }
+    .badge-on  { background: #1a3d2e; color: var(--ok); }
+    .badge-off { background: #2e2020; color: var(--error); }
+  </style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ── Header ─────────────────────────────────────────────────────────── -->
+  <header>
+    <div>
+      <h1>🔧 MiniLang Compiler Visualizer</h1>
+      <div class="tagline">Лексер · Парсер · Дерево разбора (AST) — в реальном времени</div>
+    </div>
+    <div class="spacer"></div>
+
+    <select class="example-sel" id="example-sel">
+      <option value="">— Загрузить пример —</option>
+      <option value="hello">Hello World</option>
+      <option value="factorial">Факториал</option>
+      <option value="fibonacci">Фибоначчи</option>
+      <option value="control">Управляющие конструкции</option>
+      <option value="struct">Структуры данных</option>
+    </select>
+
+    <label style="font-size:.82rem;color:var(--muted);display:flex;align-items:center;gap:.4rem;">
+      <input type="checkbox" id="auto-parse" checked>
+      Авто-обновление
+    </label>
+
+    <div class="spinner" id="spinner"></div>
+
+    <button class="btn btn-primary" id="run-btn">▶ Запустить</button>
+  </header>
+
+  <div class="main">
+    <!-- ── Left panel ──────────────────────────────────────────────────── -->
+    <div class="left-panel">
+
+      <div class="panel-header">
+        <div class="dot dot-purple"></div>
+        Исходный код MiniLang
+      </div>
+
+      <div id="editor-container"></div>
+
+      <div class="divider" id="divider"></div>
+
+      <div class="panel-header" style="cursor:pointer;" id="tokens-toggle">
+        <div class="dot dot-teal"></div>
+        Токены <span id="token-count" style="color:var(--accent2);margin-left:.5rem;"></span>
+        <div class="spacer"></div>
+        <span id="toggle-arrow">▼</span>
+      </div>
+      <div class="tokens-panel" id="tokens-panel">
+        <table id="token-table">
+          <thead>
+            <tr>
+              <th>#</th><th>Тип</th><th>Лексема</th><th>Стр:Кол</th>
+            </tr>
+          </thead>
+          <tbody id="token-body"></tbody>
+        </table>
+      </div>
+
+      <div class="errors-bar" id="errors-bar">
+        <span class="no-errors">Нет ошибок</span>
+      </div>
+
+    </div>
+
+    <!-- ── Right panel ─────────────────────────────────────────────────── -->
+    <div class="right-panel">
+
+      <div class="vis-toolbar">
+        <div class="dot dot-purple"></div>
+        <strong style="color:var(--accent)">AST — Дерево разбора</strong>
+
+        <label>Вид:
+          <select id="layout-sel">
+            <option value="top-down">Сверху вниз</option>
+            <option value="left-right">Слева направо</option>
+          </select>
+        </label>
+
+        <label>Отступ:
+          <input type="range" id="spacing-range" min="60" max="300" value="140">
+        </label>
+
+        <button class="btn btn-ghost" id="center-btn" title="Центрировать">⊕ Центр</button>
+        <button class="btn btn-ghost" id="expand-btn">⊞ Развернуть</button>
+        <button class="btn btn-ghost" id="collapse-btn">⊟ Свернуть</button>
+      </div>
+
+      <div id="tree-container">
+        <svg id="tree-svg"></svg>
+        <div id="tooltip"></div>
+      </div>
+
+      <div class="legend">
+        <span style="color:var(--muted);font-size:.72rem;margin-right:.3rem;">Узлы:</span>
+        <div class="legend-item"><div class="legend-dot" style="background:#7c6af7"></div>Program</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#3b82f6"></div>Function</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#10b981"></div>Statement</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#f59e0b"></div>Expression</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#ef4444"></div>Literal</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#8b5cf6"></div>Identifier</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#06b6d4"></div>Control</div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════ SCRIPTS ══════════════════════════════════ -->
+<script>
+// ── Example programs ────────────────────────────────────────────────────────
+const EXAMPLES = {
+  hello: `// Простейшая программа
+fn main() {
+    print("Hello, World!");
+}`,
+
+  factorial: `// Вычисление факториала
+fn factorial(int n) {
+    if (n <= 1) {
+        return 1;
+    } else {
+        return n * factorial(n - 1);
+    }
+}
+
+fn main() {
+    int result = factorial(5);
+    print(result);
+}`,
+
+  fibonacci: `// Числа Фибоначчи
+fn fib(int n) {
+    if (n <= 1) {
+        return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+
+fn main() {
+    int i = 0;
+    while (i < 10) {
+        print(fib(i));
+        i = i + 1;
+    }
+}`,
+
+  control: `// Управляющие конструкции
+fn demo() {
+    int x = 10;
+    int sum = 0;
+
+    // Цикл for
+    for (int i = 0; i < x; i = i + 1) {
+        sum = sum + i;
+    }
+
+    // Вложенный if-else
+    if (sum > 40) {
+        print("Большая сумма");
+    } else {
+        if (sum > 20) {
+            print("Средняя сумма");
+        } else {
+            print("Маленькая сумма");
+        }
+    }
+}
+
+fn main() {
+    demo();
+}`,
+
+  struct: `// Работа с переменными разных типов
+fn compute(int a, int b) {
+    int diff = a - b;
+    float ratio = 3.14;
+    bool positive = true;
+
+    if (positive && diff > 0) {
+        return diff;
+    }
+    return 0;
+}
+
+fn main() {
+    int x = compute(10, 3);
+    print(x);
+}`,
+};
+
+// ── Node classification → CSS class ────────────────────────────────────────
+function nodeClass(name) {
+  if (name === 'Program')                              return 'nc-program';
+  if (name === 'FunctionDecl')                         return 'nc-func';
+  if (['Block','Params','Param','ReturnType'].includes(name)) return 'nc-stmt';
+  if (['VarDecl','Assign','Return','ExprStmt','Print'].includes(name)) return 'nc-stmt';
+  if (['If','While','For','Condition','Then','Else','Init','Update'].includes(name)) return 'nc-ctrl';
+  if (['BinaryOp','UnaryOp','Call'].includes(name))    return 'nc-expr';
+  if (['IntLiteral','FloatLiteral','BoolLiteral','StringLiteral'].includes(name)) return 'nc-literal';
+  if (name === 'Identifier')                           return 'nc-ident';
+  return 'nc-default';
+}
+
+// ── Token type → CSS class ─────────────────────────────────────────────────
+function tokenClass(type) {
+  if (type.startsWith('KW_'))  return 'tt-kw';
+  if (type === 'IDENTIFIER')   return 'tt-id';
+  if (['INTEGER','FLOAT','BOOLEAN','STRING'].includes(type)) return 'tt-lit';
+  if (type === 'EOF')          return 'tt-eof';
+  const SEP = ['LPAREN','RPAREN','LBRACE','RBRACE','LBRACKET','RBRACKET','SEMICOLON','COMMA'];
+  if (SEP.includes(type))      return 'tt-sep';
+  return 'tt-op';
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  Monaco Editor
+// ════════════════════════════════════════════════════════════════════════════
+let monacoEditor;
+require.config({ paths: { vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs' } });
+require(['vs/editor/editor.main'], function () {
+
+  // Register MiniLang language
+  monaco.languages.register({ id: 'minilang' });
+  monaco.languages.setMonarchTokensProvider('minilang', {
+    keywords: ['fn','if','else','while','for','int','float','bool','return','void','struct','print','true','false'],
+    tokenizer: {
+      root: [
+        [/\/\/.*$/,      'comment'],
+        [/\/\*[\s\S]*?\*\//, 'comment'],
+        [/"[^"]*"/,      'string'],
+        [/\b\d+\.\d+\b/, 'number.float'],
+        [/\b\d+\b/,      'number'],
+        [/\b(fn|if|else|while|for|int|float|bool|return|void|struct|print|true|false)\b/, 'keyword'],
+        [/[a-zA-Z_]\w*/, 'identifier'],
+        [/[+\-*\/%=!<>&|]+/, 'operator'],
+        [/[(){}\[\];,]/, 'delimiter'],
+      ]
+    }
+  });
+
+  monaco.editor.defineTheme('minilang-dark', {
+    base: 'vs-dark',
+    inherit: true,
+    rules: [
+      { token: 'keyword',    foreground: 'c586c0', fontStyle: 'bold' },
+      { token: 'identifier', foreground: '9cdcfe' },
+      { token: 'number',     foreground: 'b5cea8' },
+      { token: 'number.float', foreground: 'b5cea8' },
+      { token: 'string',     foreground: 'ce9178' },
+      { token: 'comment',    foreground: '6a9955', fontStyle: 'italic' },
+      { token: 'operator',   foreground: 'd4d4d4' },
+      { token: 'delimiter',  foreground: 'ffd700' },
+    ],
+    colors: {
+      'editor.background': '#0f1117',
+      'editor.lineHighlightBackground': '#1a1d27',
+    }
+  });
+
+  monacoEditor = monaco.editor.create(document.getElementById('editor-container'), {
+    value: EXAMPLES.hello,
+    language: 'minilang',
+    theme: 'minilang-dark',
+    fontSize: 14,
+    lineNumbers: 'on',
+    minimap: { enabled: false },
+    scrollBeyondLastLine: false,
+    automaticLayout: true,
+    wordWrap: 'on',
+    padding: { top: 8, bottom: 8 },
+  });
+
+  let debounceTimer;
+  monacoEditor.onDidChangeModelContent(() => {
+    if (!document.getElementById('auto-parse').checked) return;
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(runCompiler, 600);
+  });
+
+  runCompiler(); // initial compile
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+//  D3 Tree
+// ════════════════════════════════════════════════════════════════════════════
+const svg    = d3.select('#tree-svg');
+let   gRoot  = svg.append('g');
+let   zoom   = d3.zoom().scaleExtent([.05, 4]).on('zoom', e => gRoot.attr('transform', e.transform));
+svg.call(zoom);
+
+let treeData  = null;
+let allNodes  = null;  // flat array after layout
+let collapsed = new Set(); // set of node ids that are collapsed
+
+function renderTree(data) {
+  treeData = data;
+  collapsed.clear();
+  drawTree();
+}
+
+function drawTree() {
+  if (!treeData) return;
+
+  const container = document.getElementById('tree-container');
+  const W = container.clientWidth;
+  const H = container.clientHeight;
+  const isLR = document.getElementById('layout-sel').value === 'left-right';
+  const spacing = +document.getElementById('spacing-range').value;
+
+  // Build d3 hierarchy
+  function buildHierarchy(node) {
+    const id = node._id || (node._id = Math.random().toString(36).slice(2));
+    if (collapsed.has(id) || !node.children || node.children.length === 0) {
+      return { ...node, _id: id };
+    }
+    return { ...node, _id: id, children: node.children.map(buildHierarchy) };
+  }
+
+  const root = d3.hierarchy(buildHierarchy(assignIds(treeData)));
+
+  const treeLayout = d3.tree()
+    .nodeSize(isLR ? [30, spacing] : [spacing * 0.55, spacing * 0.8])
+    .separation((a, b) => a.parent === b.parent ? 1 : 1.3);
+
+  treeLayout(root);
+
+  if (isLR) {
+    root.each(d => { const tmp = d.x; d.x = d.y; d.y = d.x_orig || d.x; });
+    root.each(d => { d.x_orig = d.x; const x2 = d.y; d.y = d.x; d.x = x2; });
+    // Proper LR swap
+    root.each(d => { const t = d.x; d.x = d.y; d.y = t; });
+  }
+
+  gRoot.selectAll('*').remove();
+
+  // Links
+  gRoot.selectAll('.link')
+    .data(root.links())
+    .join('path')
+    .attr('class','link')
+    .attr('d', isLR
+      ? d3.linkHorizontal().x(d => d.x).y(d => d.y)
+      : d3.linkVertical().x(d => d.x).y(d => d.y)
+    );
+
+  // Nodes
+  const node = gRoot.selectAll('.node')
+    .data(root.descendants())
+    .join('g')
+    .attr('class', 'node')
+    .attr('transform', d => `translate(${d.x},${d.y})`)
+    .on('click', (event, d) => {
+      toggleCollapse(d.data._id);
+      event.stopPropagation();
+    })
+    .on('mouseover', (event, d) => showTooltip(event, d))
+    .on('mousemove', (event) => moveTooltip(event))
+    .on('mouseout',  () => hideTooltip());
+
+  const RADIUS = 14;
+  node.append('circle')
+    .attr('r', RADIUS)
+    .attr('class', d => nodeClass(d.data.name));
+
+  // Has-children indicator
+  node.filter(d => d.data._has_children && !d.children)
+    .append('circle')
+    .attr('r', 5)
+    .attr('cx', 0).attr('cy', RADIUS)
+    .style('fill', '#fff').style('opacity', .6);
+
+  node.append('text')
+    .attr('dy', '.35em')
+    .attr('text-anchor', 'middle')
+    .text(d => {
+      const n = d.data.name;
+      // abbreviate long names
+      const abbr = { FunctionDecl:'fn', BinaryOp:'op', UnaryOp:'!op', ExprStmt:'expr',
+                      IntLiteral:'int', FloatLiteral:'flt', BoolLiteral:'bool', StringLiteral:'str',
+                      Identifier:'id', ReturnType:'ret' };
+      return abbr[n] || n;
+    });
+
+  // Value label below
+  node.filter(d => d.data.value)
+    .append('text')
+    .attr('class','node-value')
+    .attr('dy', `${RADIUS + 14}px`)
+    .attr('text-anchor','middle')
+    .text(d => {
+      const v = d.data.value;
+      return v.length > 16 ? v.slice(0,14)+'…' : v;
+    });
+
+  // Center on first render
+  centerTree(W, H, root);
+}
+
+function assignIds(node, counter = { v: 0 }) {
+  node._id = 'n' + (counter.v++);
+  node._has_children = !!(node.children && node.children.length);
+  if (node.children) node.children = node.children.map(c => assignIds(c, counter));
+  return node;
+}
+
+function toggleCollapse(id) {
+  if (collapsed.has(id)) collapsed.delete(id);
+  else collapsed.add(id);
+  drawTree();
+}
+
+function centerTree(W, H, root) {
+  const nodes = root.descendants();
+  const xs = nodes.map(d => d.x), ys = nodes.map(d => d.y);
+  const cx = (Math.max(...xs) + Math.min(...xs)) / 2;
+  const cy = (Math.max(...ys) + Math.min(...ys)) / 2;
+  const dx = W / 2 - cx, dy = H / 2 - cy;
+  svg.call(zoom.transform, d3.zoomIdentity.translate(dx, dy));
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  Tooltip
+// ════════════════════════════════════════════════════════════════════════════
+const tooltip = document.getElementById('tooltip');
+
+function showTooltip(event, d) {
+  const n = d.data;
+  let html = `<b>${n.name}</b>`;
+  if (n.value) html += `<br/>значение: <span style="color:var(--accent2)">${n.value}</span>`;
+  if (n._has_children) html += `<br/><span style="color:var(--muted)">Дочерних: ${(n.children||[]).length}</span>`;
+  tooltip.innerHTML = html;
+  tooltip.style.display = 'block';
+  moveTooltip(event);
+}
+function moveTooltip(event) {
+  const rect = document.getElementById('tree-container').getBoundingClientRect();
+  tooltip.style.left = (event.clientX - rect.left + 12) + 'px';
+  tooltip.style.top  = (event.clientY - rect.top  + 12) + 'px';
+}
+function hideTooltip() { tooltip.style.display = 'none'; }
+
+// ════════════════════════════════════════════════════════════════════════════
+//  Token table
+// ════════════════════════════════════════════════════════════════════════════
+function renderTokens(tokens) {
+  const tbody = document.getElementById('token-body');
+  tbody.innerHTML = '';
+  let i = 0;
+  for (const t of tokens) {
+    if (t.type === 'EOF') break;
+    const tr = document.createElement('tr');
+    const cls = tokenClass(t.type);
+    tr.innerHTML = `
+      <td style="color:var(--muted)">${++i}</td>
+      <td class="${cls}">${t.type}</td>
+      <td class="${cls}">${escHtml(t.lexeme)}</td>
+      <td style="color:var(--muted)">${t.line}:${t.column}</td>`;
+    tbody.appendChild(tr);
+  }
+  document.getElementById('token-count').textContent = `(${i})`;
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  Errors bar
+// ════════════════════════════════════════════════════════════════════════════
+function renderErrors(errors) {
+  const bar = document.getElementById('errors-bar');
+  if (!errors || errors.length === 0) {
+    bar.innerHTML = '<span class="no-errors">✓ Ошибок нет</span>';
+  } else {
+    bar.innerHTML = errors.map(e => `<div class="error-line">✖ ${escHtml(e)}</div>`).join('');
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  API call
+// ════════════════════════════════════════════════════════════════════════════
+async function runCompiler() {
+  if (!monacoEditor) return;
+  const source = monacoEditor.getValue();
+  const spinner = document.getElementById('spinner');
+  spinner.style.display = 'block';
+  try {
+    const resp = await fetch('/api/compile', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source }),
+    });
+    const data = await resp.json();
+    renderTokens(data.tokens || []);
+    renderErrors(data.errors || []);
+    if (data.ast) renderTree(data.ast);
+  } catch (err) {
+    renderErrors([`Сетевая ошибка: ${err.message}`]);
+  } finally {
+    spinner.style.display = 'none';
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  Controls
+// ════════════════════════════════════════════════════════════════════════════
+document.getElementById('run-btn').addEventListener('click', runCompiler);
+
+document.getElementById('example-sel').addEventListener('change', function () {
+  const code = EXAMPLES[this.value];
+  if (code && monacoEditor) {
+    monacoEditor.setValue(code);
+    this.value = '';
+  }
+});
+
+document.getElementById('layout-sel').addEventListener('change', drawTree);
+document.getElementById('spacing-range').addEventListener('input', drawTree);
+
+document.getElementById('center-btn').addEventListener('click', () => {
+  const container = document.getElementById('tree-container');
+  const W = container.clientWidth, H = container.clientHeight;
+  if (treeData) {
+    const root = d3.hierarchy(treeData);
+    centerTree(W, H, d3.tree().nodeSize([140 * 0.55, 140 * 0.8])(root));
+  }
+});
+
+document.getElementById('expand-btn').addEventListener('click', () => {
+  collapsed.clear();
+  drawTree();
+});
+
+document.getElementById('collapse-btn').addEventListener('click', () => {
+  // Collapse everything except root
+  function collectIds(node) {
+    if (!node) return;
+    if (node._id) collapsed.add(node._id);
+    (node.children || []).forEach(collectIds);
+  }
+  if (treeData) {
+    (treeData.children || []).forEach(c => collectIds(c));
+    drawTree();
+  }
+});
+
+// Tokens panel toggle
+document.getElementById('tokens-toggle').addEventListener('click', () => {
+  const panel = document.getElementById('tokens-panel');
+  const arrow = document.getElementById('toggle-arrow');
+  if (panel.style.display === 'none') {
+    panel.style.display = '';
+    arrow.textContent = '▼';
+  } else {
+    panel.style.display = 'none';
+    arrow.textContent = '▶';
+  }
+});
+
+// Resize handle
+(function() {
+  const divider = document.getElementById('divider');
+  const editorEl = document.getElementById('editor-container');
+  const tokensEl = document.getElementById('tokens-panel');
+  let startY, startH;
+
+  divider.addEventListener('mousedown', (e) => {
+    startY = e.clientY;
+    startH = editorEl.getBoundingClientRect().height;
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+  function onMove(e) {
+    const dy = e.clientY - startY;
+    editorEl.style.flex = 'none';
+    editorEl.style.height = Math.max(80, startH + dy) + 'px';
+    if (monacoEditor) monacoEditor.layout();
+  }
+  function onUp() {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  }
+})();
+
+// Redraw on window resize
+window.addEventListener('resize', () => {
+  if (treeData) drawTree();
+});
+</script>
+</body>
+</html>
