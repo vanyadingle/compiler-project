@@ -10,10 +10,11 @@ readme = "README.md"
 authors = [{name = "Your Name", email = "your@email.com"}]
 license = {text = "MIT"}
 requires-python = ">=3.8"
-dependencies = []
+dependencies = ["flask>=2.3"]
 
 [project.scripts]
 minicompiler-lex = "src.lexer.cli:main"
+minicompiler-vis = "web.server:app.run"
 
 [tool.setuptools.packages.find]
 where = ["src"]
